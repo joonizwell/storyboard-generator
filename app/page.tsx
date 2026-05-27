@@ -23,12 +23,6 @@ type ImgStatus = 'idle' | 'loading' | 'loaded' | 'failed'
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
-function buildImageUrl(prompt: string, style: string, bust = 0): string {
-  const full = `${prompt}, ${style}, cinematic composition, high quality`
-  const encoded = encodeURIComponent(full)
-  return `https://image.pollinations.ai/prompt/${encoded}?width=768&height=512&model=flux-schnell&nologo=true${bust ? `&_=${bust}` : ''}`
-}
-
 async function compressImage(file: File): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image()
@@ -76,7 +70,10 @@ function ImageSlot({
   const inputRef = useRef<HTMLInputElement>(null)
 
   return (
-    <div className="relative rounded-lg overflow-hidden border-2 border-dashed border-gray-700 bg-gray-900 flex items-center justify-center cursor-pointer hover:border-indigo-500 transition-colors" style={{ aspectRatio: '4/3' }}>
+    <div
+      className="relative rounded-lg overflow-hidden border-2 border-dashed border-gray-700 bg-gray-900 flex items-center justify-center cursor-pointer hover:border-indigo-500 transition-colors"
+      style={{ aspectRatio: '4/3' }}
+    >
       {image ? (
         <>
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -123,49 +120,60 @@ function PanelCard({
   styleDescription,
   active,
   onDone,
+  onImageReady,
 }: {
   panel: Panel
   index: number
   styleDescription: string
   active: boolean
   onDone: (success: boolean) => void
+  onImageReady: (url: string) => void
 }) {
   const [status, setStatus] = useState<ImgStatus>('idle')
-  const [imgKey, setImgKey] = useState(0)
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
   const retriesRef = useRef(0)
   const onDoneRef = useRef(onDone)
   onDoneRef.current = onDone
+  const onImageReadyRef = useRef(onImageReady)
+  onImageReadyRef.current = onImageReady
+
+  const fetchImage = useCallback(async () => {
+    try {
+      const prompt = `${panel.imagePrompt}, ${styleDescription}, cinematic composition, high quality`
+      const res = await fetch('/api/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? '이미지 생성 실패')
+      setImageUrl(data.url)
+      setStatus('loaded')
+      onImageReadyRef.current(data.url)
+      onDoneRef.current(true)
+    } catch {
+      if (retriesRef.current < 3) {
+        retriesRef.current++
+        setTimeout(fetchImage, 2000)
+      } else {
+        setStatus('failed')
+        onDoneRef.current(false)
+      }
+    }
+  }, [panel.imagePrompt, styleDescription])
 
   useEffect(() => {
     if (active && status === 'idle') {
       setStatus('loading')
+      fetchImage()
     }
-  }, [active, status])
-
-  const handleLoad = useCallback(() => {
-    setStatus('loaded')
-    onDoneRef.current(true)
-  }, [])
-
-  const handleError = useCallback(() => {
-    if (retriesRef.current < 3) {
-      retriesRef.current++
-      setTimeout(() => {
-        setImgKey((k) => k + 1)
-      }, 2000)
-    } else {
-      setStatus('failed')
-      onDoneRef.current(false)
-    }
-  }, [])
+  }, [active, status, fetchImage])
 
   const handleManualRetry = () => {
     retriesRef.current = 0
     setStatus('loading')
-    setImgKey((k) => k + 1)
+    fetchImage()
   }
-
-  const imageUrl = buildImageUrl(panel.imagePrompt, styleDescription, imgKey)
 
   return (
     <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-800 hover:border-indigo-800 transition-colors">
@@ -179,17 +187,12 @@ function PanelCard({
 
       {/* Image */}
       <div className="relative bg-gray-950" style={{ aspectRatio: '16/9' }}>
-        {status !== 'idle' && status !== 'failed' && (
+        {imageUrl && status === 'loaded' && (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            key={imgKey}
             src={imageUrl}
             alt={panel.caption}
-            onLoad={handleLoad}
-            onError={handleError}
-            className={`absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-500 ${
-              status === 'loaded' ? 'opacity-100' : 'opacity-0'
-            }`}
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
           />
         )}
 
@@ -244,6 +247,7 @@ export default function Home() {
   const [loadedCount, setLoadedCount] = useState(0)
   const [activePanels, setActivePanels] = useState<Set<number>>(new Set())
   const [isDownloading, setIsDownloading] = useState(false)
+  const [panelImageUrls, setPanelImageUrls] = useState<Record<number, string>>({})
 
   const activeCountRef = useRef(0)
   const nextToActivateRef = useRef(0)
@@ -262,6 +266,7 @@ export default function Home() {
       activeCountRef.current = 0
       nextToActivateRef.current = 0
       setLoadedCount(0)
+      setPanelImageUrls({})
       activateNext(result.panels.length)
     }
   }, [result, activateNext])
@@ -275,6 +280,10 @@ export default function Home() {
     },
     [result, activateNext],
   )
+
+  const handleImageReady = useCallback((index: number, url: string) => {
+    setPanelImageUrls((prev) => ({ ...prev, [index]: url }))
+  }, [])
 
   const handleImageUpload = async (index: number, file: File) => {
     const compressed = await compressImage(file)
@@ -328,7 +337,8 @@ export default function Home() {
       const folder = zip.folder('storyboard')!
       await Promise.all(
         result.panels.map(async (panel, i) => {
-          const url = buildImageUrl(panel.imagePrompt, result.styleDescription)
+          const url = panelImageUrls[i]
+          if (!url) return
           try {
             const res = await fetch(url)
             const blob = await res.blob()
@@ -354,7 +364,7 @@ export default function Home() {
       <header className="sticky top-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-800">
         <div className="max-w-5xl mx-auto px-4 py-4">
           <h1 className="text-xl font-bold text-indigo-400">스토리보드 생성기</h1>
-          <p className="text-gray-500 text-xs mt-0.5">AI로 시나리오를 시각적 스토리보드로 변환</p>
+          <p className="text-gray-500 text-xs mt-0.5">AI로 시나리오를 시각적 스토리보드로 변환 (DALL·E 3)</p>
         </div>
       </header>
 
@@ -445,6 +455,11 @@ export default function Home() {
           />
         </section>
 
+        {/* 비용 안내 */}
+        <div className="bg-indigo-950/30 border border-indigo-900/50 rounded-xl px-4 py-3 text-indigo-300 text-xs">
+          💡 DALL·E 3 이미지 생성 비용: 장당 약 $0.08 (10장 ≈ $0.80 / 20장 ≈ $1.60)
+        </div>
+
         {/* Error */}
         {error && (
           <div className="bg-red-950/50 border border-red-800 text-red-300 rounded-xl px-4 py-3 text-sm">
@@ -479,7 +494,7 @@ export default function Home() {
                 </span>
                 <button
                   onClick={handleDownload}
-                  disabled={isDownloading}
+                  disabled={isDownloading || loadedCount === 0}
                   className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg transition-colors"
                 >
                   {isDownloading ? (
@@ -515,6 +530,7 @@ export default function Home() {
                   styleDescription={result.styleDescription}
                   active={activePanels.has(i)}
                   onDone={(success) => handlePanelDone(i, success)}
+                  onImageReady={(url) => handleImageReady(i, url)}
                 />
               ))}
             </div>
@@ -526,8 +542,8 @@ export default function Home() {
           <p className="font-semibold text-gray-400 mb-2">이용 시 참고사항</p>
           <p>• 캐릭터 일관성은 보장되지 않습니다.</p>
           <p>• 참조 이미지는 텍스트 프롬프트로만 반영되며 완벽한 스타일 재현은 어렵습니다.</p>
-          <p>• Pollinations.ai 서버 상태에 따라 이미지 생성에 10~30초 소요될 수 있습니다.</p>
-          <p>• 상업적 이용 전 Pollinations.ai 이용약관을 반드시 확인하세요.</p>
+          <p>• DALL·E 3 이미지 URL은 1시간 후 만료됩니다. 다운로드는 생성 직후 해주세요.</p>
+          <p>• 이미지 생성 비용은 OpenAI 계정에서 차감됩니다.</p>
         </section>
       </main>
     </div>
