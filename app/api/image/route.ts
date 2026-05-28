@@ -20,7 +20,8 @@ export async function POST(req: NextRequest) {
     if (!url) throw new Error('No image URL returned')
     return NextResponse.json({ url })
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
+    console.error('[api/image] error:', JSON.stringify(err, null, 2))
+    const message = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }
