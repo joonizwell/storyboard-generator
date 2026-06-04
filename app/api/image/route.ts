@@ -17,18 +17,21 @@ export async function POST(req: NextRequest) {
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
+    // gpt-image-1: OpenAI의 현재 이미지 생성 모델 (DALL-E 3 대체)
+    // 응답은 base64 형식으로만 제공됨
     const response = await client.images.generate({
-      model: 'dall-e-3',
+      model: 'gpt-image-1',
       prompt: String(prompt).slice(0, 4000),
       size: '1024x1024',
-      quality: 'standard',
       n: 1,
-    })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
 
-    const url = response.data?.[0]?.url
-    if (!url) throw new Error('No image URL returned from OpenAI')
+    const b64 = response.data?.[0]?.b64_json
+    if (!b64) throw new Error('No image data returned from OpenAI')
 
-    return NextResponse.json({ url })
+    // base64를 data URL로 변환하여 반환 (img src로 바로 사용 가능)
+    return NextResponse.json({ url: `data:image/png;base64,${b64}` })
   } catch (err: unknown) {
     console.error('[api/image] error:', JSON.stringify(err, null, 2))
     const message = err instanceof Error ? err.message : String(err)
