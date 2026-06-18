@@ -99,13 +99,17 @@ function PanelCard({
 }) {
   const [status, setStatus] = useState<ImgStatus>('idle')
   const [imageUrl, setImageUrl] = useState<string | null>(null)
+  const [editingPrompt, setEditingPrompt] = useState(false)
+  const [customPrompt, setCustomPrompt] = useState(panel.imagePrompt)
   const retriesRef = useRef(0)
   const onDoneRef = useRef(onDone); onDoneRef.current = onDone
   const onImageReadyRef = useRef(onImageReady); onImageReadyRef.current = onImageReady
+  const activePromptRef = useRef(panel.imagePrompt)
 
-  const fetchImage = useCallback(async () => {
+  const fetchImage = useCallback(async (promptOverride?: string) => {
+    const finalPrompt = promptOverride ?? activePromptRef.current
     try {
-      const prompt = `${panel.imagePrompt}, ${styleDescription}, cinematic composition, high quality`
+      const prompt = `${finalPrompt}, ${styleDescription}, cinematic composition, high quality`
       const res = await fetch('/api/image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -120,17 +124,33 @@ function PanelCard({
     } catch {
       if (retriesRef.current < 3) {
         retriesRef.current++
-        setTimeout(fetchImage, 2000)
+        setTimeout(() => fetchImage(promptOverride), 2000)
       } else {
         setStatus('failed')
         onDoneRef.current(false)
       }
     }
-  }, [panel.imagePrompt, styleDescription])
+  }, [styleDescription])
 
   useEffect(() => {
     if (active && status === 'idle') { setStatus('loading'); fetchImage() }
   }, [active, status, fetchImage])
+
+  const handleRegenerate = () => {
+    activePromptRef.current = customPrompt
+    retriesRef.current = 0
+    setImageUrl(null)
+    setStatus('loading')
+    setEditingPrompt(false)
+    fetchImage(customPrompt)
+  }
+
+  const handleQuickRegenerate = () => {
+    retriesRef.current = 0
+    setImageUrl(null)
+    setStatus('loading')
+    fetchImage(activePromptRef.current)
+  }
 
   return (
     <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-800 hover:border-indigo-800 transition-colors">
@@ -138,7 +158,16 @@ function PanelCard({
         <span className="text-2xl font-black text-indigo-400 leading-none">
           #{String(index + 1).padStart(2, '0')}
         </span>
-        <span className="font-semibold text-gray-100 mt-0.5">{panel.caption}</span>
+        <span className="font-semibold text-gray-100 mt-0.5 flex-1">{panel.caption}</span>
+        {status === 'loaded' && (
+          <button
+            onClick={handleQuickRegenerate}
+            title="빠른 재생성"
+            className="text-gray-600 hover:text-indigo-400 transition-colors text-sm flex-shrink-0"
+          >
+            🔄
+          </button>
+        )}
       </div>
       <div className="relative bg-gray-950" style={{ aspectRatio: '16/9' }}>
         {imageUrl && status === 'loaded' && (
@@ -178,6 +207,36 @@ function PanelCard({
           <span className="text-gray-500 font-medium">지문  </span>
           {panel.stageDirection}
         </p>
+
+        {/* 프롬프트 편집 & 재생성 */}
+        {(status === 'loaded' || status === 'failed') && (
+          <div className="pt-1 border-t border-gray-800 mt-2">
+            <button
+              onClick={() => setEditingPrompt(!editingPrompt)}
+              className="text-xs text-gray-600 hover:text-indigo-400 transition-colors flex items-center gap-1"
+            >
+              <span>{editingPrompt ? '✕' : '✏️'}</span>
+              {editingPrompt ? '편집 닫기' : '프롬프트 편집 & 재생성'}
+            </button>
+            {editingPrompt && (
+              <div className="mt-2 space-y-2">
+                <textarea
+                  value={customPrompt}
+                  onChange={(e) => setCustomPrompt(e.target.value)}
+                  rows={3}
+                  className="w-full bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-gray-300 text-xs resize-none focus:outline-none focus:border-indigo-500 transition-colors"
+                  placeholder="이미지 프롬프트를 수정하세요..."
+                />
+                <button
+                  onClick={handleRegenerate}
+                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-lg transition-colors font-medium"
+                >
+                  🔄 이 패널 재생성
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -214,6 +273,12 @@ export default function Home() {
   const [scenarioStarted, setScenarioStarted] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
+  // ── 이미지 피드백 state
+  const [feedbackMessages, setFeedbackMessages] = useState<ChatMsg[]>([])
+  const [feedbackInput, setFeedbackInput] = useState('')
+  const [feedbackLoading, setFeedbackLoading] = useState(false)
+  const feedbackEndRef = useRef<HTMLDivElement>(null)
+
   // ── STEP 05 state
   const [finalScenario, setFinalScenario] = useState('')
   const [panelCount, setPanelCount] = useState<10 | 20>(10)
@@ -233,6 +298,11 @@ export default function Home() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chatMessages, chatLoading])
 
+  // 피드백 채팅 자동 스크롤
+  useEffect(() => {
+    feedbackEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [feedbackMessages, feedbackLoading])
+
   // 이미지 큐
   const activateNext = useCallback((total: number) => {
     while (activeCountRef.current < 2 && nextToActivateRef.current < total) {
@@ -249,6 +319,7 @@ export default function Home() {
       nextToActivateRef.current = 0
       setLoadedCount(0)
       setPanelImageUrls({})
+      setFeedbackMessages([]) // 새 스토리보드 생성 시 피드백 초기화
       activateNext(result.panels.length)
     }
   }, [result, activateNext])
@@ -429,6 +500,66 @@ export default function Home() {
   // 최신 AI 메시지 가져오기
   const getLastAiMessage = () =>
     [...chatMessages].reverse().find((m) => m.role === 'assistant')?.content ?? ''
+
+  // 피드백 모드 시스템 프롬프트
+  const buildFeedbackSystemPrompt = useCallback((r: GenerateResult): string => {
+    const panelLines = r.panels
+      .map(
+        (p, i) =>
+          `[씬 ${i + 1}] ${p.caption}\n  이미지 프롬프트: ${p.imagePrompt}\n  대사: ${p.dialogue || '없음'}\n  지문: ${p.stageDirection}`,
+      )
+      .join('\n\n')
+
+    return [
+      '당신은 광고 스토리보드 이미지 피드백 전문가입니다.',
+      '사용자가 생성된 이미지에 대한 피드백을 주면 수정 방향을 제안하고, 필요시 개선된 이미지 프롬프트를 제안해주세요.',
+      '항상 한국어로 답변하세요.',
+      '',
+      '=== 현재 생성된 스토리보드 ===',
+      `전체 스타일: ${r.styleDescription}`,
+      '',
+      panelLines,
+      '',
+      '=== 피드백 가이드 ===',
+      '- 특정 씬 수정 요청 시: "이미지 프롬프트 수정안:" 형식으로 구체적인 영어 프롬프트를 제안해주세요.',
+      '- 각 패널 카드 하단의 "✏️ 프롬프트 편집 & 재생성" 버튼으로 프롬프트를 직접 수정하고 재생성할 수 있다고 안내해주세요.',
+      '- 전체 분위기 변경이 필요하면 STEP 05 시나리오를 수정 후 전체 재생성을 권유해주세요.',
+      '- 패널 헤더의 🔄 버튼으로 같은 프롬프트로 빠르게 재생성할 수 있습니다.',
+    ].join('\n')
+  }, [])
+
+  // 피드백 채팅 전송
+  const handleFeedbackSend = useCallback(async () => {
+    if (!feedbackInput.trim() || feedbackLoading || !result) return
+    const userMsg: ChatMsg = { role: 'user', content: feedbackInput }
+    const updated: ChatMsg[] = [...feedbackMessages, userMsg]
+    setFeedbackMessages(updated)
+    setFeedbackInput('')
+    setFeedbackLoading(true)
+
+    const systemOverride = buildFeedbackSystemPrompt(result)
+    // context는 피드백 모드에서 사용되지 않지만 API 스펙상 필요
+    const emptyCtx = {
+      requestText: '', fileNames: [], size: '', contentType: '',
+      contentForm: '', referenceLinks: [], referenceImageBase64s: [],
+    }
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: updated, context: emptyCtx, systemOverride }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? 'AI 응답 실패')
+      setFeedbackMessages([...updated, { role: 'assistant', content: data.message }])
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '오류 발생'
+      setFeedbackMessages([...updated, { role: 'assistant', content: `⚠️ ${msg}` }])
+    } finally {
+      setFeedbackLoading(false)
+    }
+  }, [feedbackInput, feedbackLoading, feedbackMessages, result, buildFeedbackSystemPrompt])
 
   return (
     <div className="min-h-screen">
@@ -955,6 +1086,112 @@ export default function Home() {
             </div>
           </section>
         )}
+
+        {/* ═══════════════════════════════════════════════════
+            이미지 피드백 & 수정 논의 (스토리보드 생성 후 표시)
+        ═══════════════════════════════════════════════════ */}
+        <section className={`bg-gray-900 border border-gray-800 rounded-2xl p-6 ${!result ? 'hidden' : ''}`}>
+          <h2 className="font-semibold text-gray-100 mb-1 flex items-center gap-2.5">
+            <span className="bg-indigo-600 text-white text-xs font-bold px-2.5 py-1 rounded-lg tracking-wide">
+              피드백
+            </span>
+            <span className="text-base">이미지 피드백 & 수정 논의</span>
+          </h2>
+          <p className="text-gray-500 text-sm mb-5">
+            생성된 이미지에 대해 AI와 대화하며 수정 방향을 논의하세요.
+            각 패널의 <span className="text-indigo-400">✏️ 프롬프트 편집</span>으로 개별 수정도 가능해요.
+          </p>
+
+          {/* 채팅 영역 */}
+          <div className="bg-gray-950 rounded-xl p-4 h-[340px] overflow-y-auto space-y-4 mb-3">
+            {feedbackMessages.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+                <div className="w-12 h-12 rounded-full bg-gray-800 flex items-center justify-center text-2xl">💬</div>
+                <p className="text-gray-500 text-sm">
+                  생성된 이미지에 대한 피드백을 입력해주세요.
+                </p>
+                <div className="flex flex-wrap gap-2 justify-center">
+                  {[
+                    '1번 패널 배경을 실내로 바꿔줘',
+                    '전체적으로 더 밝은 분위기로',
+                    '3번 씬 인물을 제거해줘',
+                    '색감을 따뜻하게 수정해줘',
+                  ].map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      onClick={() => setFeedbackInput(suggestion)}
+                      className="bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 text-xs px-3 py-1.5 rounded-full transition-colors"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {feedbackMessages.map((msg, i) => (
+              <div key={i} className={`flex gap-2 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                {msg.role === 'assistant' && (
+                  <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-1">
+                    AI
+                  </div>
+                )}
+                <div
+                  className={`max-w-[88%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                    msg.role === 'user'
+                      ? 'bg-indigo-600 text-white rounded-tr-sm'
+                      : 'bg-gray-800 text-gray-100 rounded-tl-sm'
+                  }`}
+                >
+                  {msg.content}
+                </div>
+              </div>
+            ))}
+
+            {feedbackLoading && (
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
+                  AI
+                </div>
+                <div className="bg-gray-800 rounded-2xl rounded-tl-sm px-4 py-3">
+                  <div className="flex gap-1 items-center">
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+            <div ref={feedbackEndRef} />
+          </div>
+
+          {/* 입력창 */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={feedbackInput}
+              onChange={(e) => setFeedbackInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  handleFeedbackSend()
+                }
+              }}
+              placeholder="예: 2번 패널 하늘을 노을로 바꿔줘 / 전체 색감을 더 차갑게..."
+              disabled={feedbackLoading}
+              className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 py-3 text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500 transition-colors text-sm disabled:opacity-50"
+            />
+            <button
+              onClick={handleFeedbackSend}
+              disabled={!feedbackInput.trim() || feedbackLoading}
+              className="px-5 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:opacity-50 text-white rounded-xl transition-colors flex-shrink-0"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+              </svg>
+            </button>
+          </div>
+        </section>
 
         {/* 이용 안내 */}
         <section className="bg-gray-900/50 border border-gray-800/50 rounded-2xl p-5 text-gray-500 text-xs space-y-1.5">

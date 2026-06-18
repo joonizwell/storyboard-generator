@@ -48,7 +48,7 @@ function buildSystemPrompt(ctx: Context): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, context, isInitial } = await req.json()
+    const { messages, context, isInitial, systemOverride } = await req.json()
     const ctx = context as Context
 
     if (!process.env.OPENAI_API_KEY) {
@@ -57,9 +57,12 @@ export async function POST(req: NextRequest) {
 
     const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
+    // systemOverride가 있으면 그걸 사용, 없으면 기본 시스템 프롬프트
+    const systemContent: string = systemOverride ?? buildSystemPrompt(ctx)
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const apiMessages: any[] = [
-      { role: 'system', content: buildSystemPrompt(ctx) },
+      { role: 'system', content: systemContent },
     ]
 
     // 대화 히스토리 추가
