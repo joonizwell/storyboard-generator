@@ -29,6 +29,19 @@ interface RefLink {
   url: string
 }
 
+interface FileData {
+  name: string
+  base64: string
+  mimeType: string
+}
+
+interface AnalyzedUrl {
+  url: string
+  type: 'youtube' | 'webpage' | 'url'
+  text?: string
+  thumbnailBase64?: string
+}
+
 type ImgStatus = 'idle' | 'loading' | 'loaded' | 'failed'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -63,6 +76,34 @@ async function compressImageFile(file: File, maxPx = 800): Promise<string> {
 
 function isImageFile(file: File) {
   return file.type.startsWith('image/')
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+async function extractVideoFrame(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video')
+    const url = URL.createObjectURL(file)
+    video.preload = 'metadata'
+    video.onseeked = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.min(video.videoWidth, 640)
+      canvas.height = Math.min(video.videoHeight, 360)
+      canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
+      URL.revokeObjectURL(url)
+      resolve(canvas.toDataURL('image/jpeg', 0.85))
+    }
+    video.onloadedmetadata = () => { video.currentTime = 0.5 }
+    video.onerror = () => { URL.revokeObjectURL(url); reject(new Error('video frame failed')) }
+    video.src = url
+  })
 }
 
 // ─── Helper Components ────────────────────────────────────────────────────────
@@ -338,34 +379,70 @@ export default function Home() {
     setPanelImageUrls((prev) => ({ ...prev, [index]: url }))
   }, [])
 
-  // 컨텍스트 빌드 (Steps 1-3 데이터 수집)
+  // 컨텍스트 빌드 (Steps 1-3 데이터 수집 + URL 분석 + 파일 변환)
   const buildContext = useCallback(async () => {
     const size = selectedSize === '직접 입력' ? customSize : selectedSize
     const contentType = selectedContentType === '기타' ? customContentType : selectedContentType
     const contentForm = selectedContentForm === '기타' ? customContentForm : selectedContentForm
     const activeLinks = refLinks.map((l) => l.url).filter((u) => u.trim())
 
-    // 레퍼런스 이미지 파일 → base64
+    // ── STEP 01 파일: PDF → Claude에 직접 전달
+    const files: FileData[] = []
+    for (const file of step1Files) {
+      if (file.type === 'application/pdf') {
+        try {
+          const base64 = await fileToBase64(file)
+          files.push({ name: file.name, base64, mimeType: file.type })
+        } catch { /* skip */ }
+      }
+    }
+
+    // ── STEP 03 레퍼런스 파일: 이미지 + 영상 첫 프레임 → Claude Vision
     const referenceImageBase64s: string[] = []
     for (const file of refFiles) {
       if (isImageFile(file)) {
         try {
           const b64 = await compressImageFile(file, 600)
           referenceImageBase64s.push(b64)
-        } catch {
-          // skip
+        } catch { /* skip */ }
+      } else if (file.type.startsWith('video/')) {
+        try {
+          const frameB64 = await extractVideoFrame(file)
+          referenceImageBase64s.push(frameB64)
+        } catch { /* skip */ }
+      }
+    }
+
+    // ── STEP 03 레퍼런스 링크: YouTube 썸네일 + 웹페이지 텍스트 분석
+    const analyzedUrls: AnalyzedUrl[] = []
+    for (const link of activeLinks) {
+      try {
+        const res = await fetch('/api/analyze-url', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: link }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          analyzedUrls.push({ url: link, ...data })
+        } else {
+          analyzedUrls.push({ url: link, type: 'url' })
         }
+      } catch {
+        analyzedUrls.push({ url: link, type: 'url' })
       }
     }
 
     return {
       requestText,
       fileNames: step1Files.map((f) => f.name),
+      files,
       size,
       contentType,
       contentForm,
       referenceLinks: activeLinks,
       referenceImageBase64s,
+      analyzedUrls,
     }
   }, [
     requestText, step1Files, selectedSize, customSize,
@@ -595,7 +672,7 @@ export default function Home() {
                 d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
             <p className="text-gray-400 text-sm">클릭하거나 파일을 드래그해서 업로드</p>
-            <p className="text-gray-600 text-xs mt-1">PPT · Excel · Word · PDF · 이미지 등 다양한 파일 지원</p>
+            <p className="text-gray-600 text-xs mt-1">PDF는 AI가 직접 읽습니다 · PPT는 PDF로 변환 후 업로드 권장</p>
           </div>
           <input
             ref={step1FileRef}
@@ -830,7 +907,7 @@ export default function Home() {
                 d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
             </svg>
             <p className="text-gray-400 text-sm">이미지 · 영상 파일을 여러 개 한 번에 업로드</p>
-            <p className="text-gray-600 text-xs mt-1">이미지 파일은 AI가 직접 분석합니다</p>
+            <p className="text-gray-600 text-xs mt-1">이미지·영상 파일 모두 AI가 직접 분석합니다 (영상은 첫 프레임 자동 추출)</p>
           </div>
           <input
             ref={step3FileRef}
@@ -1197,7 +1274,8 @@ export default function Home() {
         <section className="bg-gray-900/50 border border-gray-800/50 rounded-2xl p-5 text-gray-500 text-xs space-y-1.5">
           <p className="font-semibold text-gray-400 mb-2">이용 시 참고사항</p>
           <p>• 캐릭터·장소 일관성은 보장되지 않습니다.</p>
-          <p>• 레퍼런스 이미지는 AI가 분석하여 프롬프트에 반영하지만 완벽한 재현은 어렵습니다.</p>
+          <p>• PDF 브리핑 문서, 레퍼런스 이미지·영상(첫 프레임), YouTube 썸네일, 웹링크 내용을 AI가 직접 분석합니다.</p>
+          <p>• PPT·Excel·Word 파일은 PDF로 변환 후 업로드하시면 내용을 읽을 수 있습니다.</p>
           <p>• 이미지 생성 비용은 OpenAI 계정에서 차감됩니다.</p>
           <p>• 상업적 이용 전 OpenAI 이용 약관을 확인하세요.</p>
         </section>
