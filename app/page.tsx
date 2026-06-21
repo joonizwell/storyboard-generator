@@ -386,14 +386,24 @@ export default function Home() {
     const contentForm = selectedContentForm === '기타' ? customContentForm : selectedContentForm
     const activeLinks = refLinks.map((l) => l.url).filter((u) => u.trim())
 
-    // ── STEP 01 파일: PDF → Claude에 직접 전달
+    // ── STEP 01 파일: PDF → 별도 엔드포인트로 텍스트 추출
     const files: FileData[] = []
+    const documentTexts: Array<{ name: string; text: string }> = []
     for (const file of step1Files) {
       if (file.type === 'application/pdf') {
         try {
-          const base64 = await fileToBase64(file)
-          files.push({ name: file.name, base64, mimeType: file.type })
-        } catch { /* skip */ }
+          const fd = new FormData()
+          fd.append('file', file)
+          const res = await fetch('/api/process-pdf', { method: 'POST', body: fd })
+          if (res.ok) {
+            const data = await res.json()
+            documentTexts.push({ name: file.name, text: data.text })
+          } else {
+            documentTexts.push({ name: file.name, text: `(${file.name} 분석 실패)` })
+          }
+        } catch {
+          documentTexts.push({ name: file.name, text: `(${file.name} 분석 실패)` })
+        }
       }
     }
 
@@ -437,6 +447,7 @@ export default function Home() {
       requestText,
       fileNames: step1Files.map((f) => f.name),
       files,
+      documentTexts,
       size,
       contentType,
       contentForm,

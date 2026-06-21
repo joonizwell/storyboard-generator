@@ -18,10 +18,16 @@ interface AnalyzedUrl {
   thumbnailBase64?: string
 }
 
+interface DocumentText {
+  name: string
+  text: string
+}
+
 interface Context {
   requestText: string
   fileNames: string[]
   files: FileData[]
+  documentTexts: DocumentText[]
   size: string
   contentType: string
   contentForm: string
@@ -44,14 +50,20 @@ function buildSystemPrompt(ctx: Context): string {
 
   if (ctx.requestText) lines.push(`요청 내용:\n${ctx.requestText}`)
 
-  const pdfFiles = (ctx.files ?? []).filter((f) => f.mimeType === 'application/pdf')
+  // PDF 문서 분석 결과 (텍스트 추출본)
+  const docTexts = ctx.documentTexts ?? []
+  if (docTexts.length > 0) {
+    lines.push('', '=== 첨부 문서 분석 결과 ===')
+    for (const doc of docTexts) {
+      lines.push(`[${doc.name}]\n${doc.text}`)
+    }
+  }
+
   const imgFiles = (ctx.files ?? []).filter((f) => f.mimeType.startsWith('image/'))
   const otherFileNames = (ctx.fileNames ?? []).filter(
-    (name) => !(ctx.files ?? []).some((f) => f.name === name),
+    (name) => !docTexts.some((d) => d.name === name) && !(ctx.files ?? []).some((f) => f.name === name),
   )
 
-  if (pdfFiles.length > 0)
-    lines.push(`분석된 PDF 문서: ${pdfFiles.map((f) => f.name).join(', ')} (내용 첨부됨)`)
   if (imgFiles.length > 0)
     lines.push(`분석된 이미지 파일: ${imgFiles.map((f) => f.name).join(', ')} (이미지 첨부됨)`)
   if (otherFileNames.length > 0)
