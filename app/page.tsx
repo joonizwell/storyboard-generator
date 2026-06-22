@@ -320,6 +320,13 @@ export default function Home() {
   const [feedbackLoading, setFeedbackLoading] = useState(false)
   const feedbackEndRef = useRef<HTMLDivElement>(null)
 
+  // ── 시나리오 생성 시 저장된 컨텍스트 (피드백에서 재사용)
+  const [savedContext, setSavedContext] = useState<{
+    referenceLinks: string[]
+    analyzedUrls: AnalyzedUrl[]
+    requestText: string
+  } | null>(null)
+
   // ── STEP 05 state
   const [finalScenario, setFinalScenario] = useState('')
   const [panelCount, setPanelCount] = useState<10 | 20>(10)
@@ -467,6 +474,12 @@ export default function Home() {
     setScenarioStarted(true)
 
     const context = await buildContext()
+    // 피드백 채팅에서 재사용할 수 있도록 컨텍스트 저장
+    setSavedContext({
+      referenceLinks: context.referenceLinks,
+      analyzedUrls: context.analyzedUrls,
+      requestText: context.requestText,
+    })
     const initialMsg: ChatMsg = {
       role: 'user',
       content:
@@ -598,10 +611,40 @@ export default function Home() {
       )
       .join('\n\n')
 
-    return [
+    const lines = [
       '당신은 광고 스토리보드 이미지 피드백 전문가입니다.',
       '사용자가 생성된 이미지에 대한 피드백을 주면 수정 방향을 제안하고, 필요시 개선된 이미지 프롬프트를 제안해주세요.',
       '항상 한국어로 답변하세요.',
+    ]
+
+    // 레퍼런스 링크 포함 (savedContext에서)
+    if (savedContext) {
+      if (savedContext.requestText) {
+        lines.push('', '=== 광고주 요청사항 ===', savedContext.requestText)
+      }
+      const analyzedUrls = savedContext.analyzedUrls ?? []
+      const rawLinks = savedContext.referenceLinks ?? []
+      if (analyzedUrls.length > 0) {
+        lines.push('', '=== 레퍼런스 링크 ===')
+        analyzedUrls.forEach((au, i) => {
+          if (au.type === 'youtube') {
+            lines.push(`${i + 1}. YouTube 영상: ${au.url}`)
+          } else if (au.type === 'webpage' && au.text) {
+            lines.push(`${i + 1}. 웹페이지 (${au.url}) 내용 요약:\n${au.text.slice(0, 500)}`)
+          } else {
+            lines.push(`${i + 1}. ${au.url}`)
+          }
+        })
+      } else if (rawLinks.length > 0) {
+        lines.push('', '=== 레퍼런스 링크 ===')
+        rawLinks.forEach((l, i) => lines.push(`${i + 1}. ${l}`))
+      }
+      if (analyzedUrls.length > 0 || rawLinks.length > 0) {
+        lines.push('※ Pinterest/Instagram 링크는 로그인 필요로 내용 직접 접근이 불가합니다. URL만 참고해주세요.')
+      }
+    }
+
+    lines.push(
       '',
       '=== 현재 생성된 스토리보드 ===',
       `전체 스타일: ${r.styleDescription}`,
@@ -613,8 +656,10 @@ export default function Home() {
       '- 각 패널 카드 하단의 "✏️ 프롬프트 편집 & 재생성" 버튼으로 프롬프트를 직접 수정하고 재생성할 수 있다고 안내해주세요.',
       '- 전체 분위기 변경이 필요하면 STEP 05 시나리오를 수정 후 전체 재생성을 권유해주세요.',
       '- 패널 헤더의 🔄 버튼으로 같은 프롬프트로 빠르게 재생성할 수 있습니다.',
-    ].join('\n')
-  }, [])
+    )
+
+    return lines.join('\n')
+  }, [savedContext])
 
   // 피드백 채팅 전송
   const handleFeedbackSend = useCallback(async () => {
